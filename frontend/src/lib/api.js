@@ -7,7 +7,6 @@ async function request(url, opts = {}) {
     ...opts,
   });
   if (res.status === 401) {
-    window.location.href = '/login';
     throw new Error('Unauthorized');
   }
   if (!res.ok) {
