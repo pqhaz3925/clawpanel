@@ -31,7 +31,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ClawPanel", version="2.1.0", lifespan=lifespan)
 
 BASE_DIR = Path(__file__).parent
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+static_dir = BASE_DIR / "static"
+app.mount("/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets")
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 SESSIONS: dict = {}  # token -> {admin: username, expires: timestamp}
@@ -116,6 +118,9 @@ def get_current_admin(request: Request) -> str | None:
 def require_admin(request: Request) -> str:
     admin = get_current_admin(request)
     if not admin:
+        # JSON API gets 401, HTML gets redirect
+        if request.url.path.startswith("/api/"):
+            raise HTTPException(status_code=401, detail="Unauthorized")
         raise HTTPException(status_code=303, headers={"Location": "/login"})
     return admin
 
@@ -139,12 +144,23 @@ async def verify_agent_secret(request: Request):
         raise HTTPException(403, "invalid agent secret")
 
 
+def _serve_spa() -> HTMLResponse | None:
+    """Serve React SPA index.html if build exists."""
+    index = BASE_DIR / "static" / "index.html"
+    if index.exists():
+        return HTMLResponse(index.read_text())
+    return None
+
+
 # ---------------------------------------------------------------------------
-# Auth routes
+# Auth routes (SPA-aware: serve React if build exists, fallback to Jinja)
 # ---------------------------------------------------------------------------
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
+    spa = _serve_spa()
+    if spa:
+        return spa
     return templates.TemplateResponse("login.html", {"request": request, "error": ""})
 
 
@@ -178,11 +194,16 @@ async def logout(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Dashboard
+# Dashboard (SPA or legacy Jinja)
 # ---------------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
+    # Serve React SPA if build exists
+    index = BASE_DIR / "static" / "index.html"
+    if index.exists():
+        return HTMLResponse(index.read_text())
+    # Fallback to old Jinja template
     admin = get_current_admin(request)
     if not admin:
         return RedirectResponse("/login", status_code=303)
@@ -205,6 +226,9 @@ async def dashboard(request: Request):
 
 @app.get("/users", response_class=HTMLResponse)
 async def users_page(request: Request):
+    spa = _serve_spa()
+    if spa:
+        return spa
     admin = get_current_admin(request)
     if not admin:
         return RedirectResponse("/login", status_code=303)
@@ -290,6 +314,9 @@ async def user_sub_info(request: Request, user_id: str):
 
 @app.get("/nodes", response_class=HTMLResponse)
 async def nodes_page(request: Request):
+    spa = _serve_spa()
+    if spa:
+        return spa
     admin = get_current_admin(request)
     if not admin:
         return RedirectResponse("/login", status_code=303)
@@ -330,6 +357,9 @@ async def node_delete(request: Request, node_id: str):
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
+    spa = _serve_spa()
+    if spa:
+        return spa
     admin = get_current_admin(request)
     if not admin:
         return RedirectResponse("/login", status_code=303)
@@ -463,6 +493,221 @@ async def api_stats(request: Request):
         "online_nodes": online_nodes,
         "total_traffic": format_bytes(total_traffic)
     }
+
+
+# ---------------------------------------------------------------------------
+# JSON API — Auth
+# ---------------------------------------------------------------------------
+
+@app.post("/api/auth/login")
+async def api_login(request: Request):
+    body = await request.json()
+    username = body.get("username", "")
+    password = body.get("password", "")
+    if await models.verify_admin(username, password):
+        _cleanup_sessions()
+        token = secrets.token_urlsafe(32)
+        SESSIONS[token] = {"admin": username, "expires": time.time() + 86400 * 7}
+        from fastapi.responses import JSONResponse
+        resp = JSONResponse({"ok": True, "admin": username})
+        resp.set_cookie(
+            models.COOKIE_NAME, token,
+            httponly=True, secure=True, samesite="lax",
+            max_age=86400 * 7,
+        )
+        return resp
+    raise HTTPException(401, "Invalid credentials")
+
+
+@app.post("/api/auth/logout")
+async def api_logout(request: Request):
+    token = request.cookies.get(models.COOKIE_NAME)
+    if token and token in SESSIONS:
+        del SESSIONS[token]
+    from fastapi.responses import JSONResponse
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(models.COOKIE_NAME)
+    return resp
+
+
+@app.get("/api/auth/me")
+async def api_me(request: Request):
+    admin = get_current_admin(request)
+    if not admin:
+        raise HTTPException(401)
+    return {"admin": admin}
+
+
+# ---------------------------------------------------------------------------
+# JSON API — Users
+# ---------------------------------------------------------------------------
+
+@app.get("/api/users")
+async def api_get_users(request: Request):
+    require_admin(request)
+    users = await models.get_all_users()
+    return {"users": users}
+
+
+@app.post("/api/users")
+async def api_create_user(request: Request):
+    require_admin(request)
+    body = await request.json()
+    username = body.get("username", "").strip()
+    if not username:
+        raise HTTPException(400, "username required")
+    note = body.get("note", "")
+    data_limit_gb = float(body.get("data_limit_gb", 0))
+    expire_days = int(body.get("expire_days", 0))
+    data_limit = int(data_limit_gb * 1024**3) if data_limit_gb > 0 else 0
+    expire_at = (time.time() + expire_days * 86400) if expire_days > 0 else 0
+    user = await models.create_user(username, note=note, data_limit=data_limit, expire_at=expire_at)
+    return {"ok": True, "user": user}
+
+
+@app.patch("/api/users/{user_id}")
+async def api_update_user(request: Request, user_id: str):
+    require_admin(request)
+    body = await request.json()
+    await models.update_user(user_id, **{k: v for k, v in body.items() if k in models._ALLOWED_USER_COLS})
+    return {"ok": True}
+
+
+@app.delete("/api/users/{user_id}")
+async def api_delete_user(request: Request, user_id: str):
+    require_admin(request)
+    await models.delete_user(user_id)
+    return {"ok": True}
+
+
+@app.post("/api/users/{user_id}/toggle")
+async def api_toggle_user(request: Request, user_id: str):
+    require_admin(request)
+    await models.toggle_user(user_id)
+    return {"ok": True}
+
+
+@app.post("/api/users/{user_id}/reset-traffic")
+async def api_reset_traffic(request: Request, user_id: str):
+    require_admin(request)
+    await models.update_user(user_id, data_used=0)
+    return {"ok": True}
+
+
+@app.post("/api/users/{user_id}/reset-uuid")
+async def api_reset_uuid(request: Request, user_id: str):
+    require_admin(request)
+    await models.reset_user_uuid(user_id)
+    return {"ok": True}
+
+
+@app.get("/api/users/{user_id}/sub-info")
+async def api_user_sub_info(request: Request, user_id: str):
+    require_admin(request)
+    user, nodes = await asyncio.gather(
+        models.get_user(user_id),
+        models.get_active_nodes(),
+    )
+    if not user:
+        raise HTTPException(404)
+    links = generate_sub_links(user["xray_uuid"], user["username"], nodes)
+    scheme = request.headers.get("x-forwarded-proto", "https")
+    host = PANEL_HOST or request.headers.get("host", "panel.clawvpn.lol")
+    sub_url = f"{scheme}://{host}/sub/{user['sub_token']}"
+    return {"sub_url": sub_url, "links": links, "user": user}
+
+
+# ---------------------------------------------------------------------------
+# JSON API — Nodes
+# ---------------------------------------------------------------------------
+
+@app.get("/api/nodes")
+async def api_get_nodes(request: Request):
+    require_admin(request)
+    nodes = await models.get_all_nodes()
+    return {"nodes": nodes}
+
+
+@app.post("/api/nodes")
+async def api_create_node(request: Request):
+    require_admin(request)
+    body = await request.json()
+    name = body.get("name", "").strip()
+    address = body.get("address", "").strip()
+    if not name or not address:
+        raise HTTPException(400, "name and address required")
+    flag = body.get("flag", "\U0001f30d")
+    label = body.get("label", "") or name
+    node = await models.create_node(name, address, flag=flag, label=label)
+    return {"ok": True, "node": node}
+
+
+@app.delete("/api/nodes/{node_id}")
+async def api_delete_node(request: Request, node_id: str):
+    require_admin(request)
+    await models.delete_node(node_id)
+    return {"ok": True}
+
+
+@app.post("/api/nodes/{node_id}/toggle")
+async def api_toggle_node(request: Request, node_id: str):
+    require_admin(request)
+    await models.toggle_node(node_id)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# JSON API — Settings
+# ---------------------------------------------------------------------------
+
+@app.get("/api/settings")
+async def api_get_settings(request: Request):
+    require_admin(request)
+    agent_secret = await models.get_setting(models.SETTING_AGENT_SECRET)
+    return {"agent_secret": agent_secret}
+
+
+@app.post("/api/settings/password")
+async def api_change_password(request: Request):
+    admin_name = require_admin(request)
+    body = await request.json()
+    if not await models.verify_admin(admin_name, body.get("old_password", "")):
+        raise HTTPException(400, "Wrong current password")
+    await models.update_admin_password(admin_name, body.get("new_password", ""))
+    return {"ok": True}
+
+
+@app.post("/api/settings/agent-secret")
+async def api_change_agent_secret(request: Request):
+    require_admin(request)
+    body = await request.json()
+    secret = body.get("agent_secret", "").strip()
+    if not secret:
+        raise HTTPException(400, "secret required")
+    await models.set_setting(models.SETTING_AGENT_SECRET, secret)
+    _agent_secret_cache["value"] = ""
+    _agent_secret_cache["fetched_at"] = 0
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# SPA fallback — serve React build
+# ---------------------------------------------------------------------------
+
+@app.get("/{path:path}")
+async def spa_fallback(request: Request, path: str):
+    # Don't intercept API, agent, or sub routes
+    if path.startswith(("api/", "agent/", "sub/")):
+        raise HTTPException(404)
+    # Serve index.html for SPA routing
+    index = BASE_DIR / "static" / "index.html"
+    if index.exists():
+        return HTMLResponse(index.read_text())
+    # Fallback to old template if React build not present
+    admin = get_current_admin(request)
+    if not admin:
+        return RedirectResponse("/login", status_code=303)
+    return RedirectResponse("/", status_code=303)
 
 
 # ---------------------------------------------------------------------------
