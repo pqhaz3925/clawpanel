@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Users — ClawPanel{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold">Users</h1>
+        <p class="text-claw-muted text-sm mt-1">{{ users|length }} total · {{ users|selectattr('is_active')|list|length }} active</p>
+    </div>
+    <button onclick="document.getElementById('create-modal').classList.remove('hidden')"
+        class="btn-primary flex items-center space-x-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+        <span>New User</span>
+    </button>
+</div>
+
+<!-- Users table -->
+<div class="glass rounded-xl overflow-hidden">
+    {% if users %}
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="text-claw-muted text-xs uppercase tracking-wider border-b border-claw-border bg-claw-bg/30">
+                    <th class="text-left py-3 px-4">User</th>
+                    <th class="text-left py-3 px-4">UUID</th>
+                    <th class="text-left py-3 px-4">Status</th>
+                    <th class="text-left py-3 px-4">Traffic</th>
+                    <th class="text-left py-3 px-4">Expires</th>
+                    <th class="text-left py-3 px-4">Note</th>
+                    <th class="text-right py-3 px-4">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr class="border-b border-claw-border/30 hover:bg-claw-accent/5 transition-colors">
+                    <td class="py-3 px-4">
+                        <span class="font-medium">{{ user.username }}</span>
+                    </td>
+                    <td class="py-3 px-4">
+                        <code class="text-xs text-claw-muted bg-claw-bg px-2 py-1 rounded font-mono">{{ user.xray_uuid[:8] }}...</code>
+                        <button class="copy-btn ml-1 text-claw-muted hover:text-claw-accent" onclick="copyToClipboard('{{ user.xray_uuid }}', this)" title="Copy UUID">
+                            <svg class="w-3.5 h-3.5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                        </button>
+                    </td>
+                    <td class="py-3 px-4">
+                        {% if user.is_active %}
+                            {% if user.expire_at > 0 and user.expire_at < int(time.time()) %}
+                                <span class="text-claw-warn text-xs bg-claw-warn/10 px-2 py-0.5 rounded-full">expired</span>
+                            {% elif user.data_limit > 0 and user.data_used >= user.data_limit %}
+                                <span class="text-claw-warn text-xs bg-claw-warn/10 px-2 py-0.5 rounded-full">limit</span>
+                            {% else %}
+                                <span class="text-claw-success text-xs bg-claw-success/10 px-2 py-0.5 rounded-full">active</span>
+                            {% endif %}
+                        {% else %}
+                            <span class="text-claw-danger text-xs bg-claw-danger/10 px-2 py-0.5 rounded-full">disabled</span>
+                        {% endif %}
+                    </td>
+                    <td class="py-3 px-4 text-claw-muted">
+                        {{ format_bytes(user.data_used) }}
+                        {% if user.data_limit > 0 %}
+                            <span class="text-claw-border">/</span> {{ format_bytes(user.data_limit) }}
+                        {% endif %}
+                    </td>
+                    <td class="py-3 px-4 text-claw-muted">{{ time_left(user.expire_at) }}</td>
+                    <td class="py-3 px-4 text-claw-muted text-xs">{{ user.note }}</td>
+                    <td class="py-3 px-4 text-right">
+                        <div class="flex items-center justify-end space-x-1">
+                            <a href="/users/{{ user.id }}/sub-info"
+                                class="btn-sm text-xs bg-claw-accent/20 text-claw-accent hover:bg-claw-accent/30" title="Subscription">
+                                Sub
+                            </a>
+                            <form method="POST" action="/users/{{ user.id }}/toggle" class="inline">
+                                <button class="btn-sm text-xs {% if user.is_active %}bg-claw-warn/20 text-claw-warn hover:bg-claw-warn/30{% else %}bg-claw-success/20 text-claw-success hover:bg-claw-success/30{% endif %}">
+                                    {% if user.is_active %}Off{% else %}On{% endif %}
+                                </button>
+                            </form>
+                            <form method="POST" action="/users/{{ user.id }}/reset-traffic" class="inline">
+                                <button class="btn-sm text-xs bg-claw-border/30 text-claw-muted hover:text-claw-text hover:bg-claw-border/50" title="Reset traffic">
+                                    Reset
+                                </button>
+                            </form>
+                            <form method="POST" action="/users/{{ user.id }}/delete" class="inline"
+                                onsubmit="return confirm('Delete {{ user.username }}?')">
+                                <button class="btn-sm text-xs bg-claw-danger/10 text-claw-danger hover:bg-claw-danger/20">Del</button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-center py-16 text-claw-muted">
+        <svg class="w-12 h-12 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+        <p>No users yet</p>
+        <button onclick="document.getElementById('create-modal').classList.remove('hidden')"
+            class="mt-3 text-claw-accent hover:underline text-sm">Create first user</button>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Create user modal -->
+<div id="create-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+    <div class="glass rounded-2xl p-6 w-full max-w-md mx-4 glow">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-semibold">New User</h2>
+            <button onclick="document.getElementById('create-modal').classList.add('hidden')"
+                class="text-claw-muted hover:text-claw-text">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+        <form method="POST" action="/users/create" class="space-y-4">
+            <div>
+                <label class="block text-sm text-claw-muted mb-1">Username *</label>
+                <input type="text" name="username" class="input-field w-full" required placeholder="e.g. john">
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm text-claw-muted mb-1">Data limit (GB)</label>
+                    <input type="number" name="data_limit_gb" class="input-field w-full" value="0" min="0" step="0.1" placeholder="0 = unlimited">
+                </div>
+                <div>
+                    <label class="block text-sm text-claw-muted mb-1">Expire (days)</label>
+                    <input type="number" name="expire_days" class="input-field w-full" value="0" min="0" placeholder="0 = never">
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm text-claw-muted mb-1">Note</label>
+                <input type="text" name="note" class="input-field w-full" placeholder="optional">
+            </div>
+            <button type="submit" class="btn-primary w-full">Create User</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

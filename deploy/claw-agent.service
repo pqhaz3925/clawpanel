@@ -1,0 +1,15 @@
+[Unit]
+Description=ClawAgent - Xray config sync daemon
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/claw-agent/env
+ExecStart=/usr/bin/python3 /opt/claw-agent/agent.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

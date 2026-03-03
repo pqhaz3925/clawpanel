@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — ClawPanel{% endblock %}
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold">Dashboard</h1>
+    <p class="text-claw-muted text-sm mt-1">Overview of your VPN infrastructure</p>
+</div>
+
+<!-- Stats cards -->
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+    <div class="glass rounded-xl p-5 glow">
+        <div class="text-claw-muted text-xs uppercase tracking-wider mb-1">Users</div>
+        <div class="text-3xl font-bold text-claw-text">{{ users|length }}</div>
+        <div class="text-claw-muted text-sm mt-1">
+            {{ users|selectattr('is_active')|list|length }} active
+        </div>
+    </div>
+    <div class="glass rounded-xl p-5 glow">
+        <div class="text-claw-muted text-xs uppercase tracking-wider mb-1">Nodes</div>
+        <div class="text-3xl font-bold text-claw-text">{{ nodes|length }}</div>
+        <div class="text-claw-muted text-sm mt-1">
+            {% set online = [] %}
+            {% for n in nodes %}
+                {% if n.is_active and (now - n.last_heartbeat) < 120 %}
+                    {% if online.append(1) %}{% endif %}
+                {% endif %}
+            {% endfor %}
+            {{ online|length }} online
+        </div>
+    </div>
+    <div class="glass rounded-xl p-5 glow">
+        <div class="text-claw-muted text-xs uppercase tracking-wider mb-1">Total Traffic</div>
+        <div class="text-3xl font-bold text-claw-text">
+            {{ format_bytes(users|sum(attribute='data_used')) }}
+        </div>
+        <div class="text-claw-muted text-sm mt-1">all time</div>
+    </div>
+    <div class="glass rounded-xl p-5 glow">
+        <div class="text-claw-muted text-xs uppercase tracking-wider mb-1">Protocols</div>
+        <div class="text-3xl font-bold text-claw-accent">4</div>
+        <div class="text-claw-muted text-sm mt-1">XHTTP · HY2 · XDNS · XICMP</div>
+    </div>
+</div>
+
+<!-- Nodes status -->
+<div class="glass rounded-xl p-6 mb-6">
+    <h2 class="text-lg font-semibold mb-4">Nodes</h2>
+    {% if nodes %}
+    <div class="space-y-3">
+        {% for node in nodes %}
+        <div class="flex items-center justify-between bg-claw-bg/50 rounded-lg px-4 py-3">
+            <div class="flex items-center">
+                {% if node.is_active and (now - node.last_heartbeat) < 120 %}
+                    <span class="status-dot status-online"></span>
+                {% else %}
+                    <span class="status-dot status-offline"></span>
+                {% endif %}
+                <span class="text-lg mr-2">{{ node.flag }}</span>
+                <div>
+                    <span class="font-medium">{{ node.label or node.name }}</span>
+                    <span class="text-claw-muted text-sm ml-2">{{ node.address }}</span>
+                </div>
+            </div>
+            <div class="text-right text-sm text-claw-muted">
+                {% if node.agent_version %}
+                    <span class="mr-3">v{{ node.agent_version }}</span>
+                {% endif %}
+                <span>{{ time_ago(node.last_heartbeat) }}</span>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-claw-muted text-center py-8">No nodes configured. <a href="/nodes" class="text-claw-accent hover:underline">Add one</a></p>
+    {% endif %}
+</div>
+
+<!-- Recent users -->
+<div class="glass rounded-xl p-6">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold">Recent Users</h2>
+        <a href="/users" class="text-claw-accent text-sm hover:underline">View all →</a>
+    </div>
+    {% if users %}
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="text-claw-muted text-xs uppercase tracking-wider border-b border-claw-border">
+                    <th class="text-left py-2 px-3">User</th>
+                    <th class="text-left py-2 px-3">Status</th>
+                    <th class="text-left py-2 px-3">Traffic</th>
+                    <th class="text-left py-2 px-3">Expires</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users[:10] %}
+                <tr class="border-b border-claw-border/30 hover:bg-claw-accent/5 transition-colors">
+                    <td class="py-2.5 px-3 font-medium">{{ user.username }}</td>
+                    <td class="py-2.5 px-3">
+                        {% if user.is_active %}
+                            <span class="text-claw-success text-xs bg-claw-success/10 px-2 py-0.5 rounded-full">active</span>
+                        {% else %}
+                            <span class="text-claw-danger text-xs bg-claw-danger/10 px-2 py-0.5 rounded-full">disabled</span>
+                        {% endif %}
+                    </td>
+                    <td class="py-2.5 px-3 text-claw-muted">
+                        {{ format_bytes(user.data_used) }}
+                        {% if user.data_limit > 0 %}
+                            / {{ format_bytes(user.data_limit) }}
+                        {% endif %}
+                    </td>
+                    <td class="py-2.5 px-3 text-claw-muted">{{ time_left(user.expire_at) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-claw-muted text-center py-8">No users yet. <a href="/users" class="text-claw-accent hover:underline">Create one</a></p>
+    {% endif %}
+</div>
+{% endblock %}
