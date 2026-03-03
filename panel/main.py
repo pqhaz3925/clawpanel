@@ -2,21 +2,19 @@
 ClawPanel — main FastAPI application.
 Web UI + Agent API + Subscription API.
 """
+import asyncio
+import hmac
 import os
-import json
 import time
-import hashlib
 import secrets
 import base64
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import Optional
 
-from fastapi import FastAPI, Request, Response, Depends, HTTPException, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, JSONResponse
+from fastapi import FastAPI, Request, HTTPException, Form
+from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.middleware.base import BaseHTTPMiddleware
 
 import models
 from xray import build_xray_config, generate_sub_links
@@ -30,14 +28,20 @@ async def lifespan(app: FastAPI):
     await models.init_db()
     yield
 
-app = FastAPI(title="ClawPanel", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="ClawPanel", version="2.1.0", lifespan=lifespan)
 
 BASE_DIR = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-SESSION_SECRET = secrets.token_hex(32)
 SESSIONS: dict = {}  # token -> {admin: username, expires: timestamp}
+
+# Cached agent secret — avoids hitting DB on every agent request
+_agent_secret_cache: dict = {"value": "", "fetched_at": 0}
+_CACHE_TTL = 300  # 5 min
+
+PANEL_HOST = os.environ.get("PANEL_HOST", "")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -79,7 +83,6 @@ def time_left(ts: float) -> str:
     return f"{int(diff/86400)}d"
 
 
-# Register template globals
 templates.env.globals["format_bytes"] = format_bytes
 templates.env.globals["time_ago"] = time_ago
 templates.env.globals["time_left"] = time_left
@@ -87,16 +90,20 @@ templates.env.globals["int"] = int
 templates.env.globals["time"] = time
 
 
+def _cleanup_sessions():
+    """Evict expired sessions (called lazily)."""
+    now = time.time()
+    expired = [k for k, v in SESSIONS.items() if v["expires"] < now]
+    for k in expired:
+        del SESSIONS[k]
+
+
 # ---------------------------------------------------------------------------
-# Auth middleware
+# Auth helpers
 # ---------------------------------------------------------------------------
 
-def get_session_token(request: Request) -> Optional[str]:
-    return request.cookies.get("claw_session")
-
-
-def get_current_admin(request: Request) -> Optional[str]:
-    token = get_session_token(request)
+def get_current_admin(request: Request) -> str | None:
+    token = request.cookies.get(models.COOKIE_NAME)
     if not token or token not in SESSIONS:
         return None
     sess = SESSIONS[token]
@@ -106,11 +113,30 @@ def get_current_admin(request: Request) -> Optional[str]:
     return sess["admin"]
 
 
-def require_admin(request: Request):
+def require_admin(request: Request) -> str:
     admin = get_current_admin(request)
     if not admin:
         raise HTTPException(status_code=303, headers={"Location": "/login"})
     return admin
+
+
+async def _get_agent_secret() -> str:
+    """Return agent secret with simple TTL cache."""
+    now = time.time()
+    if _agent_secret_cache["value"] and (now - _agent_secret_cache["fetched_at"]) < _CACHE_TTL:
+        return _agent_secret_cache["value"]
+    val = await models.get_setting(models.SETTING_AGENT_SECRET)
+    _agent_secret_cache["value"] = val
+    _agent_secret_cache["fetched_at"] = now
+    return val
+
+
+async def verify_agent_secret(request: Request):
+    """Timing-safe agent secret verification."""
+    secret = request.headers.get("X-Agent-Secret", "")
+    expected = await _get_agent_secret()
+    if not expected or not hmac.compare_digest(secret, expected):
+        raise HTTPException(403, "invalid agent secret")
 
 
 # ---------------------------------------------------------------------------
@@ -125,10 +151,15 @@ async def login_page(request: Request):
 @app.post("/login")
 async def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
     if await models.verify_admin(username, password):
+        _cleanup_sessions()
         token = secrets.token_urlsafe(32)
         SESSIONS[token] = {"admin": username, "expires": time.time() + 86400 * 7}
         resp = RedirectResponse("/", status_code=303)
-        resp.set_cookie("claw_session", token, httponly=True, max_age=86400 * 7)
+        resp.set_cookie(
+            models.COOKIE_NAME, token,
+            httponly=True, secure=True, samesite="lax",
+            max_age=86400 * 7,
+        )
         return resp
     return templates.TemplateResponse("login.html", {
         "request": request,
@@ -138,11 +169,11 @@ async def login_submit(request: Request, username: str = Form(...), password: st
 
 @app.get("/logout")
 async def logout(request: Request):
-    token = get_session_token(request)
+    token = request.cookies.get(models.COOKIE_NAME)
     if token and token in SESSIONS:
         del SESSIONS[token]
     resp = RedirectResponse("/login", status_code=303)
-    resp.delete_cookie("claw_session")
+    resp.delete_cookie(models.COOKIE_NAME)
     return resp
 
 
@@ -155,8 +186,10 @@ async def dashboard(request: Request):
     admin = get_current_admin(request)
     if not admin:
         return RedirectResponse("/login", status_code=303)
-    users = await models.get_all_users()
-    nodes = await models.get_all_nodes()
+    users, nodes = await asyncio.gather(
+        models.get_all_users(),
+        models.get_all_nodes(),
+    )
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "admin": admin,
@@ -175,9 +208,11 @@ async def users_page(request: Request):
     admin = get_current_admin(request)
     if not admin:
         return RedirectResponse("/login", status_code=303)
-    users = await models.get_all_users()
-    nodes = await models.get_all_nodes()
-    panel_host = request.headers.get("host", "panel.clawvpn.lol:8000")
+    users, nodes = await asyncio.gather(
+        models.get_all_users(),
+        models.get_all_nodes(),
+    )
+    panel_host = PANEL_HOST or request.headers.get("host", "panel.clawvpn.lol")
     return templates.TemplateResponse("users.html", {
         "request": request,
         "admin": admin,
@@ -200,9 +235,7 @@ async def user_create(request: Request, username: str = Form(...), note: str = F
 @app.post("/users/{user_id}/toggle")
 async def user_toggle(request: Request, user_id: str):
     require_admin(request)
-    user = await models.get_user(user_id)
-    if user:
-        await models.update_user(user_id, is_active=0 if user["is_active"] else 1)
+    await models.toggle_user(user_id)
     return RedirectResponse("/users", status_code=303)
 
 
@@ -223,8 +256,7 @@ async def user_reset_traffic(request: Request, user_id: str):
 @app.post("/users/{user_id}/reset-uuid")
 async def user_reset_uuid(request: Request, user_id: str):
     require_admin(request)
-    import uuid
-    await models.update_user(user_id, xray_uuid=str(uuid.uuid4()))
+    await models.reset_user_uuid(user_id)
     return RedirectResponse("/users", status_code=303)
 
 
@@ -233,13 +265,15 @@ async def user_sub_info(request: Request, user_id: str):
     admin = get_current_admin(request)
     if not admin:
         return RedirectResponse("/login", status_code=303)
-    user = await models.get_user(user_id)
+    user, nodes = await asyncio.gather(
+        models.get_user(user_id),
+        models.get_active_nodes(),
+    )
     if not user:
         raise HTTPException(404)
-    nodes = await models.get_all_nodes()
     links = generate_sub_links(user["xray_uuid"], user["username"], nodes)
     scheme = request.headers.get("x-forwarded-proto", "https")
-    host = request.headers.get("host", "panel.clawvpn.lol:8000")
+    host = PANEL_HOST or request.headers.get("host", "panel.clawvpn.lol")
     sub_url = f"{scheme}://{host}/sub/{user['sub_token']}"
     return templates.TemplateResponse("sub_info.html", {
         "request": request,
@@ -270,7 +304,7 @@ async def nodes_page(request: Request):
 
 @app.post("/nodes/create")
 async def node_create(request: Request, name: str = Form(...), address: str = Form(...),
-                      flag: str = Form("🌍"), label: str = Form("")):
+                      flag: str = Form("\U0001f30d"), label: str = Form("")):
     require_admin(request)
     await models.create_node(name, address, flag=flag, label=label or name)
     return RedirectResponse("/nodes", status_code=303)
@@ -279,12 +313,7 @@ async def node_create(request: Request, name: str = Form(...), address: str = Fo
 @app.post("/nodes/{node_id}/toggle")
 async def node_toggle(request: Request, node_id: str):
     require_admin(request)
-    db = await models.get_db()
-    rows = await db.execute_fetchall("SELECT * FROM nodes WHERE id=?", (node_id,))
-    if rows:
-        node = dict(rows[0])
-        await models.update_node(node_id, is_active=0 if node["is_active"] else 1)
-    await db.close()
+    await models.toggle_node(node_id)
     return RedirectResponse("/nodes", status_code=303)
 
 
@@ -304,7 +333,7 @@ async def settings_page(request: Request):
     admin = get_current_admin(request)
     if not admin:
         return RedirectResponse("/login", status_code=303)
-    agent_secret = await models.get_setting("agent_secret")
+    agent_secret = await models.get_setting(models.SETTING_AGENT_SECRET)
     return templates.TemplateResponse("settings.html", {
         "request": request,
         "admin": admin,
@@ -318,31 +347,23 @@ async def change_password(request: Request, old_password: str = Form(...),
     admin_name = require_admin(request)
     if not await models.verify_admin(admin_name, old_password):
         return RedirectResponse("/settings?error=wrong_password", status_code=303)
-    db = await models.get_db()
-    pw_hash = hashlib.sha256(new_password.encode()).hexdigest()
-    await db.execute("UPDATE admin SET password_hash=? WHERE username=?", (pw_hash, admin_name))
-    await db.commit()
-    await db.close()
+    await models.update_admin_password(admin_name, new_password)
     return RedirectResponse("/settings?ok=password", status_code=303)
 
 
 @app.post("/settings/agent-secret")
 async def change_agent_secret(request: Request, agent_secret: str = Form(...)):
     require_admin(request)
-    await models.set_setting("agent_secret", agent_secret)
+    await models.set_setting(models.SETTING_AGENT_SECRET, agent_secret)
+    # Invalidate cache
+    _agent_secret_cache["value"] = ""
+    _agent_secret_cache["fetched_at"] = 0
     return RedirectResponse("/settings?ok=secret", status_code=303)
 
 
 # ---------------------------------------------------------------------------
 # Agent API (called by node daemons)
 # ---------------------------------------------------------------------------
-
-async def verify_agent_secret(request: Request):
-    secret = request.headers.get("X-Agent-Secret", "")
-    expected = await models.get_setting("agent_secret")
-    if not expected or secret != expected:
-        raise HTTPException(403, "invalid agent secret")
-
 
 @app.get("/agent/config/{node_name}")
 async def agent_get_config(request: Request, node_name: str):
@@ -363,14 +384,11 @@ async def agent_heartbeat(request: Request):
     version = body.get("version", "")
     traffic = body.get("traffic", {})
 
-    await models.node_heartbeat(node_name, version)
-
-    # Record traffic per user
-    for email, stats in traffic.items():
-        up = stats.get("up", 0)
-        down = stats.get("down", 0)
-        if up > 0 or down > 0:
-            await models.record_traffic(email, node_name, up, down)
+    # Parallel: heartbeat + traffic recording
+    await asyncio.gather(
+        models.node_heartbeat(node_name, version),
+        models.record_traffic_batch(node_name, traffic),
+    )
 
     return {"ok": True}
 
@@ -388,21 +406,18 @@ async def subscription(request: Request, token: str):
     if not user["is_active"]:
         raise HTTPException(403, "subscription disabled")
 
-    # Check expiry
     if user["expire_at"] > 0 and user["expire_at"] < time.time():
         raise HTTPException(403, "subscription expired")
 
-    # Check data limit
     if user["data_limit"] > 0 and user["data_used"] >= user["data_limit"]:
         raise HTTPException(403, "data limit exceeded")
 
-    nodes = await models.get_all_nodes()
+    nodes = await models.get_active_nodes()
     links = generate_sub_links(user["xray_uuid"], user["username"], nodes)
 
     content = "\n".join(links)
     encoded = base64.b64encode(content.encode()).decode()
 
-    # Subscription-Userinfo header (for apps that show data usage)
     upload = 0
     download = user["data_used"]
     total = user["data_limit"] if user["data_limit"] > 0 else 0
@@ -434,8 +449,10 @@ async def api_stats(request: Request):
     admin = get_current_admin(request)
     if not admin:
         raise HTTPException(401)
-    users = await models.get_all_users()
-    nodes = await models.get_all_nodes()
+    users, nodes = await asyncio.gather(
+        models.get_all_users(),
+        models.get_all_nodes(),
+    )
     total_traffic = sum(u["data_used"] for u in users)
     active_users = sum(1 for u in users if u["is_active"])
     online_nodes = sum(1 for n in nodes if n["is_active"] and (time.time() - n["last_heartbeat"]) < 120)

@@ -11,9 +11,9 @@ One binary (xray-hy / finalmask) handles everything:
   VLESS XHTTP :443 :2052  +  HY2 XDNS :53  +  HY2 XICMP :9053
 
 Env vars:
-  PANEL_URL       https://panel.clawvpn.lol:8000
-  AGENT_SECRET    shared secret
-  NODE_NAME       e.g. "DE-Play2Go"
+  PANEL_URL       https://panel.clawvpn.lol
+  AGENT_SECRET    shared secret (REQUIRED)
+  NODE_NAME       e.g. "NL1" (REQUIRED)
   XRAY_HY_BIN     /usr/local/bin/xray-hy
   XRAY_HY_CFG     /etc/claw-xray-hy/config.json
   XRAY_HY_SERVICE claw-xray-hy
@@ -21,19 +21,19 @@ Env vars:
   SYNC_INTERVAL   60
 """
 
-import os, sys, json, hashlib, time, subprocess, logging
+import os, sys, json, hashlib, time, subprocess, logging, tempfile
 from pathlib import Path
 import urllib.request, urllib.error, ssl
 
-PANEL_URL       = os.environ.get("PANEL_URL",        "https://panel.clawvpn.lol:8000")
-AGENT_SECRET    = os.environ.get("AGENT_SECRET",     "clawagent-secret-changeme-2025!!")
+PANEL_URL       = os.environ.get("PANEL_URL",        "")
+AGENT_SECRET    = os.environ.get("AGENT_SECRET",     "")
 NODE_NAME       = os.environ.get("NODE_NAME",        "")
 XRAY_HY_BIN     = os.environ.get("XRAY_HY_BIN",     "/usr/local/bin/xray-hy")
 XRAY_HY_CFG     = os.environ.get("XRAY_HY_CFG",     "/etc/claw-xray-hy/config.json")
 XRAY_HY_SERVICE = os.environ.get("XRAY_HY_SERVICE", "claw-xray-hy")
 XRAY_API_PORT   = int(os.environ.get("XRAY_API_PORT",  "10085"))
 SYNC_INTERVAL   = int(os.environ.get("SYNC_INTERVAL",  "60"))
-AGENT_VERSION   = "2.0.0"
+AGENT_VERSION   = "2.1.0"
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -60,15 +60,29 @@ def http_post(url, data):
 
 
 def write_if_changed(path, content):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    """Atomic write: write to temp file, then rename (no partial configs)."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
     new_hash = hashlib.md5(content.encode()).hexdigest()
     try:
-        old_hash = hashlib.md5(Path(path).read_bytes()).hexdigest()
+        old_hash = hashlib.md5(target.read_bytes()).hexdigest()
     except FileNotFoundError:
         old_hash = ""
     if new_hash == old_hash:
         return False
-    Path(path).write_text(content)
+    # Write to temp in same directory, then atomic rename
+    fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
+    try:
+        os.write(fd, content.encode())
+        os.close(fd)
+        os.replace(tmp_path, str(target))
+    except Exception:
+        os.close(fd) if not os.get_inheritable(fd) else None
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     return True
 
 
@@ -94,13 +108,13 @@ def read_traffic():
             parts = item.get("name", "").split(">>>")
             if len(parts) < 4:
                 continue
-            uid = parts[1].split("@")[0]
+            email = parts[1]
             val = int(item.get("value", 0))
-            stats.setdefault(uid, {"up": 0, "down": 0})
+            stats.setdefault(email, {"up": 0, "down": 0})
             if parts[3] == "uplink":
-                stats[uid]["up"] += val
+                stats[email]["up"] += val
             elif parts[3] == "downlink":
-                stats[uid]["down"] += val
+                stats[email]["down"] += val
         return stats
     except Exception as e:
         log.debug(f"traffic read failed: {e}")
@@ -134,9 +148,18 @@ def sync():
 
 
 def main():
+    errors = []
     if not NODE_NAME:
-        print("ERROR: NODE_NAME is required", file=sys.stderr)
+        errors.append("NODE_NAME is required")
+    if not AGENT_SECRET:
+        errors.append("AGENT_SECRET is required")
+    if not PANEL_URL:
+        errors.append("PANEL_URL is required")
+    if errors:
+        for e in errors:
+            print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
+
     log.info(f"ClawAgent v{AGENT_VERSION} | node={NODE_NAME} | interval={SYNC_INTERVAL}s")
     sync()
     while True:
