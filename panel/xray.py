@@ -10,7 +10,6 @@ from typing import List, Dict
 
 # ---------------------------------------------------------------------------
 # Corp exit outbound — configurable via env or panel settings
-# Set CORP_EXIT_* env vars, or leave empty to disable corp exit routing.
 # ---------------------------------------------------------------------------
 
 def _build_corp_exit_outbound() -> dict | None:
@@ -72,7 +71,7 @@ BLOCK_OUTBOUND = {
 
 
 # ---------------------------------------------------------------------------
-# TLS certificate paths — override via env if needed
+# TLS certificate paths — override via env
 # ---------------------------------------------------------------------------
 
 CERT_VLESS_FULLCHAIN = os.environ.get("CERT_VLESS_FULLCHAIN", "/etc/ssl/xray/fullchain.pem")
@@ -80,9 +79,82 @@ CERT_VLESS_KEY = os.environ.get("CERT_VLESS_KEY", "/etc/ssl/xray/privkey.pem")
 CERT_HY2_FULLCHAIN = os.environ.get("CERT_HY2_FULLCHAIN", "/etc/ssl/xray/fullchain.pem")
 CERT_HY2_KEY = os.environ.get("CERT_HY2_KEY", "/etc/ssl/xray/privkey.pem")
 
-# XDNS domain for finalmask
 XDNS_DOMAIN = os.environ.get("XDNS_DOMAIN", "t.example.com")
 
+
+# ---------------------------------------------------------------------------
+# Inbound builders — shared structure, no copy-paste
+# ---------------------------------------------------------------------------
+
+def _build_vless_xhttp_inbound(tag: str, port: int, clients: list, cert: dict) -> dict:
+    """Build a VLESS XHTTP inbound (used for both EXIT and DIRECT)."""
+    return {
+        "tag": tag,
+        "listen": "0.0.0.0",
+        "port": port,
+        "protocol": "vless",
+        "settings": {
+            "clients": clients,
+            "decryption": "none"
+        },
+        "streamSettings": {
+            "network": "xhttp",
+            "xhttpSettings": {"mode": "auto"},
+            "security": "tls",
+            "tlsSettings": {
+                "certificates": [cert],
+                "minVersion": "1.2",
+                "alpn": ["h2", "http/1.1"]
+            }
+        },
+        "sniffing": {
+            "enabled": True,
+            "destOverride": ["http", "tls", "quic"]
+        }
+    }
+
+
+def _build_hy2_inbound(tag: str, port: int, clients: list, cert: dict,
+                       finalmask_entry: dict) -> dict:
+    """Build a Hysteria2 inbound (used for both XDNS and XICMP)."""
+    return {
+        "tag": tag,
+        "listen": "0.0.0.0",
+        "port": port,
+        "protocol": "hysteria",
+        "settings": {
+            "version": 2,
+            "clients": clients
+        },
+        "streamSettings": {
+            "network": "hysteria",
+            "security": "tls",
+            "tlsSettings": {
+                "certificates": [cert],
+                "minVersion": "1.2",
+                "alpn": ["h3"]
+            },
+            "hysteriaSettings": {
+                "version": 2,
+                "congestion": "brutal",
+                "up": "1 gbps",
+                "down": "1 gbps",
+                "masquerade": {
+                    "type": "proxy",
+                    "url": "https://www.bing.com",
+                    "rewriteHost": False
+                }
+            },
+            "finalmask": {
+                "udp": [finalmask_entry]
+            }
+        }
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main config builder
+# ---------------------------------------------------------------------------
 
 def build_xray_config(clients: List[Dict], node_address: str) -> dict:
     """
@@ -129,7 +201,6 @@ def build_xray_config(clients: List[Dict], node_address: str) -> dict:
         })
         direct_inbounds = ["VLESS-XHTTP-DIRECT", "HY2-XDNS", "HY2-XICMP"]
     else:
-        # No corp exit — everything goes DIRECT
         direct_inbounds = ["VLESS-XHTTP-EXIT", "VLESS-XHTTP-DIRECT", "HY2-XDNS", "HY2-XICMP"]
 
     rules.append({
@@ -178,130 +249,18 @@ def build_xray_config(clients: List[Dict], node_address: str) -> dict:
                 "protocol": "dokodemo-door",
                 "settings": {"address": "127.0.0.1"}
             },
-            # VLESS XHTTP EXIT (:443)
-            {
-                "tag": "VLESS-XHTTP-EXIT",
-                "listen": "0.0.0.0",
-                "port": 443,
-                "protocol": "vless",
-                "settings": {
-                    "clients": vless_clients,
-                    "decryption": "none"
-                },
-                "streamSettings": {
-                    "network": "xhttp",
-                    "xhttpSettings": {"mode": "auto"},
-                    "security": "tls",
-                    "tlsSettings": {
-                        "certificates": [cert_vless],
-                        "minVersion": "1.2",
-                        "alpn": ["h2", "http/1.1"]
-                    }
-                },
-                "sniffing": {
-                    "enabled": True,
-                    "destOverride": ["http", "tls", "quic"]
-                }
-            },
-            # VLESS XHTTP DIRECT (:2052)
-            {
-                "tag": "VLESS-XHTTP-DIRECT",
-                "listen": "0.0.0.0",
-                "port": 2052,
-                "protocol": "vless",
-                "settings": {
-                    "clients": vless_clients,
-                    "decryption": "none"
-                },
-                "streamSettings": {
-                    "network": "xhttp",
-                    "xhttpSettings": {"mode": "auto"},
-                    "security": "tls",
-                    "tlsSettings": {
-                        "certificates": [cert_vless],
-                        "minVersion": "1.2",
-                        "alpn": ["h2", "http/1.1"]
-                    }
-                },
-                "sniffing": {
-                    "enabled": True,
-                    "destOverride": ["http", "tls", "quic"]
-                }
-            },
-            # Hysteria2 XDNS (:53)
-            {
-                "tag": "HY2-XDNS",
-                "listen": "0.0.0.0",
-                "port": 53,
-                "protocol": "hysteria",
-                "settings": {
-                    "version": 2,
-                    "clients": hy2_clients
-                },
-                "streamSettings": {
-                    "network": "hysteria",
-                    "security": "tls",
-                    "tlsSettings": {
-                        "certificates": [cert_hy2],
-                        "minVersion": "1.2",
-                        "alpn": ["h3"]
-                    },
-                    "hysteriaSettings": {
-                        "version": 2,
-                        "congestion": "brutal",
-                        "up": "1 gbps",
-                        "down": "1 gbps",
-                        "masquerade": {
-                            "type": "proxy",
-                            "url": "https://www.bing.com",
-                            "rewriteHost": False
-                        }
-                    },
-                    "finalmask": {
-                        "udp": [{
-                            "type": "xdns",
-                            "settings": {"domain": XDNS_DOMAIN}
-                        }]
-                    }
-                }
-            },
-            # Hysteria2 XICMP (:9053)
-            {
-                "tag": "HY2-XICMP",
-                "listen": "0.0.0.0",
-                "port": 9053,
-                "protocol": "hysteria",
-                "settings": {
-                    "version": 2,
-                    "clients": hy2_clients
-                },
-                "streamSettings": {
-                    "network": "hysteria",
-                    "security": "tls",
-                    "tlsSettings": {
-                        "certificates": [cert_hy2],
-                        "minVersion": "1.2",
-                        "alpn": ["h3"]
-                    },
-                    "hysteriaSettings": {
-                        "version": 2,
-                        "congestion": "brutal",
-                        "up": "1 gbps",
-                        "down": "1 gbps",
-                        "masquerade": {
-                            "type": "proxy",
-                            "url": "https://www.bing.com",
-                            "rewriteHost": False
-                        }
-                    },
-                    "finalmask": {
-                        "udp": [{
-                            "type": "xicmp",
-                            "settings": {"listenIp": "0.0.0.0"}
-                        }]
-                    }
-                }
-            }
+            # VLESS XHTTP EXIT (:443) and DIRECT (:2052)
+            _build_vless_xhttp_inbound("VLESS-XHTTP-EXIT", 443, vless_clients, cert_vless),
+            _build_vless_xhttp_inbound("VLESS-XHTTP-DIRECT", 2052, vless_clients, cert_vless),
+            # Hysteria2 XDNS (:53) and XICMP (:9053)
+            _build_hy2_inbound("HY2-XDNS", 53, hy2_clients, cert_hy2, {
+                "type": "xdns",
+                "settings": {"domain": XDNS_DOMAIN}
+            }),
+            _build_hy2_inbound("HY2-XICMP", 9053, hy2_clients, cert_hy2, {
+                "type": "xicmp",
+                "settings": {"listenIp": "0.0.0.0"}
+            }),
         ],
         "outbounds": outbounds
     }
