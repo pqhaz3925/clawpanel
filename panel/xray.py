@@ -74,10 +74,10 @@ BLOCK_OUTBOUND = {
 # TLS certificate paths — override via env
 # ---------------------------------------------------------------------------
 
-CERT_VLESS_FULLCHAIN = os.environ.get("CERT_VLESS_FULLCHAIN", "/etc/ssl/xray/fullchain.pem")
-CERT_VLESS_KEY = os.environ.get("CERT_VLESS_KEY", "/etc/ssl/xray/privkey.pem")
-CERT_HY2_FULLCHAIN = os.environ.get("CERT_HY2_FULLCHAIN", "/etc/ssl/xray/fullchain.pem")
-CERT_HY2_KEY = os.environ.get("CERT_HY2_KEY", "/etc/ssl/xray/privkey.pem")
+CERT_VLESS_FULLCHAIN = os.environ.get("CERT_VLESS_FULLCHAIN", "/var/lib/marzban/certs/fullchain.pem")
+CERT_VLESS_KEY = os.environ.get("CERT_VLESS_KEY", "/var/lib/marzban/certs/key.pem")
+CERT_HY2_FULLCHAIN = os.environ.get("CERT_HY2_FULLCHAIN", "/var/lib/marzban/certs/fullchain.pem")
+CERT_HY2_KEY = os.environ.get("CERT_HY2_KEY", "/var/lib/marzban/certs/key.pem")
 
 XDNS_DOMAIN = os.environ.get("XDNS_DOMAIN", "t.example.com")
 
