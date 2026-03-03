@@ -443,7 +443,10 @@ async def subscription(request: Request, token: str):
         raise HTTPException(403, "data limit exceeded")
 
     nodes = await models.get_active_nodes()
-    links = generate_sub_links(user["xray_uuid"], user["username"], nodes)
+    links = generate_sub_links(
+        user["xray_uuid"], user["username"], nodes,
+        enabled_protocols=user.get("enabled_protocols", "exit,direct,dns,icmp")
+    )
 
     content = "\n".join(links)
     encoded = base64.b64encode(content.encode()).decode()
@@ -601,6 +604,21 @@ async def api_reset_uuid(request: Request, user_id: str):
     return {"ok": True}
 
 
+@app.post("/api/users/{user_id}/protocols")
+async def api_update_protocols(request: Request, user_id: str):
+    require_admin(request)
+    body = await request.json()
+    protocols = body.get("enabled_protocols", "")
+    # Validate: only allow known protocol keys
+    valid = {"exit", "direct", "dns", "icmp"}
+    parts = [p.strip().lower() for p in protocols.split(",") if p.strip()]
+    cleaned = ",".join(p for p in parts if p in valid)
+    if not cleaned:
+        raise HTTPException(400, "at least one protocol required")
+    await models.update_user(user_id, enabled_protocols=cleaned)
+    return {"ok": True, "enabled_protocols": cleaned}
+
+
 @app.get("/api/users/{user_id}/sub-info")
 async def api_user_sub_info(request: Request, user_id: str):
     require_admin(request)
@@ -610,7 +628,10 @@ async def api_user_sub_info(request: Request, user_id: str):
     )
     if not user:
         raise HTTPException(404)
-    links = generate_sub_links(user["xray_uuid"], user["username"], nodes)
+    links = generate_sub_links(
+        user["xray_uuid"], user["username"], nodes,
+        enabled_protocols=user.get("enabled_protocols", "exit,direct,dns,icmp")
+    )
     scheme = request.headers.get("x-forwarded-proto", "https")
     host = PANEL_HOST or request.headers.get("host", "panel.clawvpn.lol")
     sub_url = f"{scheme}://{host}/sub/{user['sub_token']}"

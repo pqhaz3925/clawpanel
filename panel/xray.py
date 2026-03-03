@@ -268,9 +268,15 @@ def build_xray_config(clients: List[Dict], node_address: str) -> dict:
     return config
 
 
-def generate_sub_links(user_uuid: str, username: str, nodes: list) -> list:
-    """Generate subscription links for a user across all active nodes."""
+def generate_sub_links(user_uuid: str, username: str, nodes: list,
+                       enabled_protocols: str = "exit,direct,dns,icmp") -> list:
+    """Generate subscription links for a user across all active nodes.
+
+    enabled_protocols: comma-separated list of protocol keys to include.
+    Valid keys: exit, direct, dns, icmp
+    """
     links = []
+    enabled = set(p.strip().lower() for p in enabled_protocols.split(",") if p.strip())
 
     for node in nodes:
         if not node.get("is_active"):
@@ -280,27 +286,31 @@ def generate_sub_links(user_uuid: str, username: str, nodes: list) -> list:
         flag = node.get("flag", "\U0001f30d")
         short = node.get("name", "") or node.get("label", "")
 
-        links.append(
-            f"vless://{user_uuid}@{addr}:443"
-            f"?encryption=none&type=xhttp&security=tls"
-            f"&sni={addr}&alpn=h2,http/1.1&mode=auto"
-            f"#{flag}\U0001f504 {short} EXIT"
-        )
-        links.append(
-            f"vless://{user_uuid}@{addr}:2052"
-            f"?encryption=none&type=xhttp&security=tls"
-            f"&sni={addr}&alpn=h2,http/1.1&mode=auto"
-            f"#{flag}\u26a1\ufe0f {short} DIRECT"
-        )
-        links.append(
-            f"hysteria2://{user_uuid}@{addr}:53"
-            f"?sni={addr}&insecure=0"
-            f"#{flag}\U0001f4e1 {short} DNS"
-        )
-        links.append(
-            f"hysteria2://{user_uuid}@{addr}:9053"
-            f"?sni={addr}&insecure=0"
-            f"#{flag}\U0001f6e1\ufe0f {short} ICMP"
-        )
+        if "exit" in enabled:
+            links.append(
+                f"vless://{user_uuid}@{addr}:443"
+                f"?encryption=none&type=xhttp&security=tls"
+                f"&sni={addr}&alpn=h2,http/1.1&mode=auto"
+                f"#{flag}\U0001f504 {short} EXIT"
+            )
+        if "direct" in enabled:
+            links.append(
+                f"vless://{user_uuid}@{addr}:2052"
+                f"?encryption=none&type=xhttp&security=tls"
+                f"&sni={addr}&alpn=h2,http/1.1&mode=auto"
+                f"#{flag}\u26a1\ufe0f {short} DIRECT"
+            )
+        if "dns" in enabled:
+            links.append(
+                f"hysteria2://{user_uuid}@{addr}:53"
+                f"?sni={addr}&insecure=0"
+                f"#{flag}\U0001f4e1 {short} DNS"
+            )
+        if "icmp" in enabled:
+            links.append(
+                f"hysteria2://{user_uuid}@{addr}:9053"
+                f"?sni={addr}&insecure=0"
+                f"#{flag}\U0001f6e1\ufe0f {short} ICMP"
+            )
 
     return links

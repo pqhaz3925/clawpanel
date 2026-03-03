@@ -229,7 +229,42 @@ function CreateUserModal({ open, onClose, onCreated }) {
 }
 
 function EditUserModal({ user, onClose, onSaved, onResetUuid, onCopy }) {
+  const PROTOS = [
+    { key: 'exit', label: 'VLESS EXIT', color: 'text-claw-accent' },
+    { key: 'direct', label: 'VLESS DIRECT', color: 'text-claw-green' },
+    { key: 'dns', label: 'HY2 DNS', color: 'text-claw-amber' },
+    { key: 'icmp', label: 'HY2 ICMP', color: 'text-claw-red' },
+  ];
+
+  const [protos, setProtos] = useState(new Set());
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (user) {
+      const ep = user.enabled_protocols || 'exit,direct,dns,icmp';
+      setProtos(new Set(ep.split(',').map(p => p.trim())));
+    }
+  }, [user]);
+
   if (!user) return null;
+
+  const toggleProto = async (key) => {
+    const next = new Set(protos);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    if (next.size === 0) { toast.error('Need at least 1 protocol'); return; }
+    setSaving(true);
+    try {
+      await api.updateProtocols(user.id, [...next].join(','));
+      setProtos(next);
+      toast.success('Protocols updated');
+      onSaved();
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <Modal open={!!user} onClose={onClose} title={`User: ${user.username}`}>
       <div className="space-y-3 text-sm">
@@ -258,6 +293,28 @@ function EditUserModal({ user, onClose, onSaved, onResetUuid, onCopy }) {
             <span>{user.note}</span>
           </div>
         )}
+
+        {/* Protocol toggles */}
+        <div className="bg-claw-bg rounded-lg px-3 py-3">
+          <span className="text-claw-muted text-xs block mb-2">Subscription Protocols</span>
+          <div className="grid grid-cols-2 gap-2">
+            {PROTOS.map(({ key, label, color }) => (
+              <button
+                key={key}
+                onClick={() => toggleProto(key)}
+                disabled={saving}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                  protos.has(key)
+                    ? `border-claw-accent/50 ${color} bg-claw-accent/10`
+                    : 'border-claw-border text-claw-muted opacity-50'
+                }`}
+              >
+                {protos.has(key) ? '\u2713 ' : ''}{label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <button onClick={() => { onResetUuid(user.id); onClose(); }}
           className="w-full mt-2 border border-claw-border hover:border-claw-red text-claw-muted hover:text-claw-red py-2 rounded-lg text-sm transition-colors">
           Reset UUID

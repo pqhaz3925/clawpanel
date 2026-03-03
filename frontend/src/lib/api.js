@@ -44,6 +44,8 @@ export const api = {
   resetTraffic: (id) => request(`/api/users/${id}/reset-traffic`, { method: 'POST' }),
   resetUuid: (id) => request(`/api/users/${id}/reset-uuid`, { method: 'POST' }),
   getUserSub: (id) => request(`/api/users/${id}/sub-info`),
+  updateProtocols: (id, protocols) =>
+    request(`/api/users/${id}/protocols`, { method: 'POST', body: JSON.stringify({ enabled_protocols: protocols }) }),
 
   // Nodes
   getNodes: () => request('/api/nodes'),

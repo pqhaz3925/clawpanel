@@ -16,7 +16,7 @@ COOKIE_NAME = "claw_session"
 
 _ALLOWED_USER_COLS = frozenset({
     "is_active", "data_used", "data_limit", "xray_uuid",
-    "expire_at", "note", "sub_token", "username",
+    "expire_at", "note", "sub_token", "username", "enabled_protocols",
 })
 _ALLOWED_NODE_COLS = frozenset({
     "is_active", "address", "flag", "label", "name",
@@ -66,6 +66,7 @@ async def init_db():
                 expire_at REAL DEFAULT 0,
                 is_active INTEGER DEFAULT 1,
                 note TEXT DEFAULT '',
+                enabled_protocols TEXT DEFAULT 'exit,direct,dns,icmp',
                 created_at REAL DEFAULT (unixepoch())
             );
             CREATE TABLE IF NOT EXISTS traffic_log (
@@ -101,6 +102,13 @@ async def init_db():
             await db.execute(
                 "INSERT INTO settings (key, value) VALUES (?, ?)",
                 (SETTING_AGENT_SECRET, secrets.token_urlsafe(32))
+            )
+
+        # Migration: add enabled_protocols column if missing
+        cols = [r[1] for r in await db.execute_fetchall("PRAGMA table_info(users)")]
+        if "enabled_protocols" not in cols:
+            await db.execute(
+                "ALTER TABLE users ADD COLUMN enabled_protocols TEXT DEFAULT 'exit,direct,dns,icmp'"
             )
 
         await db.commit()
