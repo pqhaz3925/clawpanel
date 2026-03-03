@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}ClawPanel{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        claw: {
+                            bg: '#0a0a0f',
+                            card: '#12121a',
+                            border: '#1e1e2e',
+                            accent: '#6c5ce7',
+                            accent2: '#a855f7',
+                            text: '#e2e8f0',
+                            muted: '#64748b',
+                            success: '#10b981',
+                            danger: '#ef4444',
+                            warn: '#f59e0b',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { background: #0a0a0f; font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+        .glass { background: rgba(18, 18, 26, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(30, 30, 46, 0.5); }
+        .glow { box-shadow: 0 0 20px rgba(108, 92, 231, 0.15); }
+        .glow-text { text-shadow: 0 0 10px rgba(108, 92, 231, 0.5); }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .btn-primary { @apply bg-claw-accent hover:bg-claw-accent2 text-white font-medium py-2 px-4 rounded-lg transition-all duration-200; }
+        .btn-danger { @apply bg-claw-danger/20 hover:bg-claw-danger/40 text-claw-danger font-medium py-2 px-4 rounded-lg transition-all duration-200; }
+        .btn-sm { @apply py-1 px-3 text-sm rounded-md; }
+        .input-field { @apply bg-claw-bg border border-claw-border text-claw-text rounded-lg px-4 py-2 focus:outline-none focus:border-claw-accent focus:ring-1 focus:ring-claw-accent transition-all; }
+        .status-dot { @apply inline-block w-2.5 h-2.5 rounded-full mr-2; }
+        .status-online { @apply bg-claw-success; box-shadow: 0 0 6px rgba(16, 185, 129, 0.6); }
+        .status-offline { @apply bg-claw-danger; }
+        .toast { @apply fixed top-4 right-4 glass rounded-lg px-4 py-3 text-sm z-50 fade-in; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0a0a0f; }
+        ::-webkit-scrollbar-thumb { background: #1e1e2e; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #2e2e3e; }
+
+        /* Copy button animation */
+        .copy-btn { position: relative; cursor: pointer; }
+        .copy-btn::after { content: 'Copied!'; position: absolute; top: -30px; left: 50%; transform: translateX(-50%);
+            background: #6c5ce7; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;
+            opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+        .copy-btn.copied::after { opacity: 1; }
+    </style>
+</head>
+<body class="text-claw-text min-h-screen">
+    {% block nav %}
+    <nav class="glass border-b border-claw-border sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6">
+            <div class="flex items-center justify-between h-14">
+                <div class="flex items-center space-x-8">
+                    <a href="/" class="text-lg font-bold glow-text">
+                        <span class="text-claw-accent">Claw</span><span class="text-claw-text">Panel</span>
+                    </a>
+                    {% if admin is defined and admin %}
+                    <div class="hidden md:flex items-center space-x-1">
+                        <a href="/" class="px-3 py-1.5 rounded-md text-sm {% if request.url.path == '/' %}bg-claw-accent/20 text-claw-accent{% else %}text-claw-muted hover:text-claw-text{% endif %} transition-colors">Dashboard</a>
+                        <a href="/users" class="px-3 py-1.5 rounded-md text-sm {% if '/users' in request.url.path %}bg-claw-accent/20 text-claw-accent{% else %}text-claw-muted hover:text-claw-text{% endif %} transition-colors">Users</a>
+                        <a href="/nodes" class="px-3 py-1.5 rounded-md text-sm {% if '/nodes' in request.url.path %}bg-claw-accent/20 text-claw-accent{% else %}text-claw-muted hover:text-claw-text{% endif %} transition-colors">Nodes</a>
+                        <a href="/settings" class="px-3 py-1.5 rounded-md text-sm {% if '/settings' in request.url.path %}bg-claw-accent/20 text-claw-accent{% else %}text-claw-muted hover:text-claw-text{% endif %} transition-colors">Settings</a>
+                    </div>
+                    {% endif %}
+                </div>
+                {% if admin is defined and admin %}
+                <div class="flex items-center space-x-4">
+                    <span class="text-claw-muted text-sm">{{ admin }}</span>
+                    <a href="/logout" class="text-claw-muted hover:text-claw-danger text-sm transition-colors">Logout</a>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </nav>
+    {% endblock %}
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 py-6 fade-in">
+        {% block content %}{% endblock %}
+    </main>
+
+    <script>
+        function copyToClipboard(text, btn) {
+            navigator.clipboard.writeText(text).then(() => {
+                btn.classList.add('copied');
+                setTimeout(() => btn.classList.remove('copied'), 1500);
+            });
+        }
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

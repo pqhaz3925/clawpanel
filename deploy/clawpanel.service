@@ -1,0 +1,16 @@
+[Unit]
+Description=ClawPanel - VPN Management Panel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/clawpanel
+EnvironmentFile=-/opt/clawpanel/.env
+ExecStart=/opt/clawpanel/venv/bin/uvicorn main:app --host 127.0.0.1 --port 3100
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

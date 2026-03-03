@@ -1,0 +1,13 @@
+[Unit]
+Description=Xray-HY (finalmask) - Xray with XDNS/XICMP support
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xray-hy run -c /etc/claw-xray-hy/config.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

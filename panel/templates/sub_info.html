@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Subscription — {{ user.username }} — ClawPanel{% endblock %}
+{% block content %}
+<div class="mb-6">
+    <a href="/users" class="text-claw-muted hover:text-claw-accent text-sm">← Back to users</a>
+    <h1 class="text-2xl font-bold mt-2">{{ user.username }} — Subscription</h1>
+</div>
+
+<!-- Sub URL -->
+<div class="glass rounded-xl p-6 mb-6">
+    <h2 class="text-lg font-semibold mb-3">Subscription URL</h2>
+    <p class="text-claw-muted text-sm mb-3">Add this URL in V2Box / Streisand / Hiddify</p>
+    <div class="flex items-center space-x-2">
+        <code class="flex-1 bg-claw-bg border border-claw-border rounded-lg px-4 py-3 text-sm font-mono text-claw-accent break-all">{{ sub_url }}</code>
+        <button class="copy-btn btn-primary btn-sm whitespace-nowrap" onclick="copyToClipboard('{{ sub_url }}', this)">
+            Copy
+        </button>
+    </div>
+</div>
+
+<!-- QR Code -->
+<div class="glass rounded-xl p-6 mb-6">
+    <h2 class="text-lg font-semibold mb-3">QR Code</h2>
+    <div class="flex justify-center bg-white rounded-lg p-4 max-w-xs mx-auto">
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data={{ sub_url }}" alt="QR" class="w-full">
+    </div>
+</div>
+
+<!-- Individual links -->
+<div class="glass rounded-xl p-6">
+    <h2 class="text-lg font-semibold mb-3">Individual Links</h2>
+    <div class="space-y-3">
+        {% for link in links %}
+        <div class="bg-claw-bg/50 rounded-lg px-4 py-3">
+            <div class="flex items-center justify-between mb-1">
+                <span class="text-sm font-medium">
+                    {% if 'EXIT' in link %}
+                        <span class="text-claw-accent">VLESS XHTTP EXIT</span>
+                    {% elif 'DIRECT' in link %}
+                        <span class="text-claw-success">VLESS XHTTP DIRECT</span>
+                    {% elif 'DNS' in link %}
+                        <span class="text-claw-warn">HY2 XDNS</span>
+                    {% elif 'ICMP' in link %}
+                        <span class="text-purple-400">HY2 XICMP</span>
+                    {% endif %}
+                </span>
+                <button class="copy-btn text-xs text-claw-muted hover:text-claw-accent" onclick="copyToClipboard('{{ link }}', this)">
+                    Copy
+                </button>
+            </div>
+            <code class="text-xs text-claw-muted font-mono break-all block">{{ link[:100] }}...</code>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- User info card -->
+<div class="glass rounded-xl p-6 mt-6">
+    <h2 class="text-lg font-semibold mb-3">Account Info</h2>
+    <div class="grid grid-cols-2 gap-4 text-sm">
+        <div>
+            <span class="text-claw-muted">UUID:</span>
+            <code class="ml-2 text-claw-text font-mono text-xs">{{ user.xray_uuid }}</code>
+        </div>
+        <div>
+            <span class="text-claw-muted">Status:</span>
+            <span class="ml-2 {% if user.is_active %}text-claw-success{% else %}text-claw-danger{% endif %}">
+                {% if user.is_active %}Active{% else %}Disabled{% endif %}
+            </span>
+        </div>
+        <div>
+            <span class="text-claw-muted">Traffic:</span>
+            <span class="ml-2">{{ format_bytes(user.data_used) }}{% if user.data_limit > 0 %} / {{ format_bytes(user.data_limit) }}{% endif %}</span>
+        </div>
+        <div>
+            <span class="text-claw-muted">Expires:</span>
+            <span class="ml-2">{{ time_left(user.expire_at) }}</span>
+        </div>
+    </div>
+</div>
+{% endblock %}

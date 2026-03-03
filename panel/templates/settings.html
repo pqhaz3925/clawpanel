@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Settings — ClawPanel{% endblock %}
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold">Settings</h1>
+    <p class="text-claw-muted text-sm mt-1">Panel configuration</p>
+</div>
+
+{% if request.query_params.get('ok') == 'password' %}
+<div class="bg-claw-success/10 border border-claw-success/30 text-claw-success text-sm rounded-lg px-4 py-2 mb-4">
+    Password changed successfully.
+</div>
+{% endif %}
+{% if request.query_params.get('ok') == 'secret' %}
+<div class="bg-claw-success/10 border border-claw-success/30 text-claw-success text-sm rounded-lg px-4 py-2 mb-4">
+    Agent secret updated. Restart agents on nodes to apply.
+</div>
+{% endif %}
+{% if request.query_params.get('error') == 'wrong_password' %}
+<div class="bg-claw-danger/10 border border-claw-danger/30 text-claw-danger text-sm rounded-lg px-4 py-2 mb-4">
+    Wrong current password.
+</div>
+{% endif %}
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- Change password -->
+    <div class="glass rounded-xl p-6">
+        <h2 class="text-lg font-semibold mb-4">Change Password</h2>
+        <form method="POST" action="/settings/password" class="space-y-4">
+            <div>
+                <label class="block text-sm text-claw-muted mb-1">Current password</label>
+                <input type="password" name="old_password" class="input-field w-full" required>
+            </div>
+            <div>
+                <label class="block text-sm text-claw-muted mb-1">New password</label>
+                <input type="password" name="new_password" class="input-field w-full" required minlength="6">
+            </div>
+            <button type="submit" class="btn-primary">Update Password</button>
+        </form>
+    </div>
+
+    <!-- Agent secret -->
+    <div class="glass rounded-xl p-6">
+        <h2 class="text-lg font-semibold mb-4">Agent Secret</h2>
+        <p class="text-claw-muted text-sm mb-3">Shared secret between panel and node agents. Must match on both sides.</p>
+        <form method="POST" action="/settings/agent-secret" class="space-y-4">
+            <div>
+                <label class="block text-sm text-claw-muted mb-1">Secret</label>
+                <div class="flex items-center space-x-2">
+                    <input type="text" name="agent_secret" id="agent-secret-input" class="input-field flex-1 font-mono text-sm" value="{{ agent_secret }}" required>
+                    <button type="button" class="copy-btn btn-sm bg-claw-border/30 text-claw-muted hover:text-claw-text"
+                        onclick="copyToClipboard(document.getElementById('agent-secret-input').value, this)">Copy</button>
+                </div>
+            </div>
+            <button type="submit" class="btn-primary">Save Secret</button>
+        </form>
+    </div>
+
+    <!-- System info -->
+    <div class="glass rounded-xl p-6 lg:col-span-2">
+        <h2 class="text-lg font-semibold mb-4">System Info</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            <div>
+                <span class="text-claw-muted text-xs uppercase tracking-wider">Panel version</span>
+                <div class="mt-1 font-mono">2.0.0</div>
+            </div>
+            <div>
+                <span class="text-claw-muted text-xs uppercase tracking-wider">Default login</span>
+                <div class="mt-1 font-mono">admin / ClawVPN2025</div>
+            </div>
+            <div>
+                <span class="text-claw-muted text-xs uppercase tracking-wider">Protocols</span>
+                <div class="mt-1">VLESS XHTTP, HY2 XDNS, HY2 XICMP</div>
+            </div>
+            <div>
+                <span class="text-claw-muted text-xs uppercase tracking-wider">Corp exit</span>
+                <div class="mt-1 font-mono text-xs">PK 91.84.111.79 (Reality)</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
