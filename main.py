@@ -12,12 +12,12 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, HTTPException, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 import models
-from xray import build_xray_config, generate_sub_links, build_nginx_config, FAKE_SITE_HTML
+from xray import build_xray_config, generate_sub_links, build_nginx_config, FAKE_SITE_HTML, generate_amnezia_config
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -402,7 +402,8 @@ async def agent_get_config(request: Request, node_name: str):
     if not node:
         raise HTTPException(404, f"node {node_name} not found")
     clients = await models.get_active_xray_clients()
-    config = build_xray_config(clients, node["address"])
+    config = build_xray_config(clients, node["address"],
+                               xhttp_path=node.get("xhttp_path", ""))
     return {"xray": config}
 
 
@@ -413,7 +414,8 @@ async def agent_get_nginx(request: Request, node_name: str):
     node = await models.get_node_by_name(node_name)
     if not node:
         raise HTTPException(404, f"node {node_name} not found")
-    nginx_conf = build_nginx_config(node["address"])
+    nginx_conf = build_nginx_config(node["address"],
+                                    xhttp_path=node.get("xhttp_path", ""))
     return {"nginx": nginx_conf, "fake_html": FAKE_SITE_HTML}
 
 
@@ -432,6 +434,27 @@ async def agent_heartbeat(request: Request):
     )
 
     return {"ok": True}
+
+
+@app.get("/agent/binary")
+async def agent_get_binary(request: Request):
+    """Serve the latest xray-hy binary for agents to self-update."""
+    await verify_agent_secret(request)
+    binary_path = Path("/opt/xray/xray-hy")
+    if not binary_path.exists():
+        raise HTTPException(404, "binary not found")
+    return FileResponse(binary_path, filename="xray-hy",
+                        media_type="application/octet-stream")
+
+
+@app.get("/agent/self-update")
+async def agent_get_self(request: Request):
+    """Serve the latest agent.py for self-update."""
+    await verify_agent_secret(request)
+    agent_path = Path(__file__).parent / "agent.py"
+    if not agent_path.exists():
+        raise HTTPException(404, "agent.py not found")
+    return PlainTextResponse(agent_path.read_text())
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +479,7 @@ async def subscription(request: Request, token: str):
     nodes = await models.get_active_nodes()
     links = generate_sub_links(
         user["xray_uuid"], user["username"], nodes,
-        enabled_protocols=user.get("enabled_protocols", "exit,direct,dns,icmp")
+        enabled_protocols=user.get("enabled_protocols", "exit,direct,socks,socks-pk,dns,icmp")
     )
 
     content = "\n".join(links)
@@ -484,9 +507,102 @@ async def subscription(request: Request, token: str):
     return PlainTextResponse(encoded, headers=headers)
 
 
-# ---------------------------------------------------------------------------
-# API — JSON endpoints for dynamic UI
-# ---------------------------------------------------------------------------
+@app.get("/sub/{token}/amnezia")
+async def subscription_amnezia(request: Request, token: str):
+    """Serve full xray-hy JSON config for AmneziaVPN client.
+
+    Includes XHTTP + HY2 XDNS/XICMP with finalmask — all transports
+    with observatory auto-fallback.
+    """
+    user = await models.get_user_by_sub_token(token)
+    if not user:
+        raise HTTPException(404, "subscription not found")
+    if not user["is_active"]:
+        raise HTTPException(403, "subscription disabled")
+    if user["expire_at"] > 0 and user["expire_at"] < time.time():
+        raise HTTPException(403, "subscription expired")
+    if user["data_limit"] > 0 and user["data_used"] >= user["data_limit"]:
+        raise HTTPException(403, "data limit exceeded")
+
+    nodes = await models.get_active_nodes()
+    config = generate_amnezia_config(
+        user["xray_uuid"], user["username"], nodes,
+        enabled_protocols=user.get("enabled_protocols", "exit,direct,socks,socks-pk,dns,icmp")
+    )
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        config,
+        headers={
+            "Content-Disposition": f'attachment; filename="clawvpn-{user["username"]}.json"',
+            "Profile-Title": f"ClawVPN - {user['username']} (Amnezia)",
+        }
+    )
+
+
+@app.get("/sub/{token}/stealth")
+async def subscription_stealth(request: Request, token: str):
+    """Serve stealth subscription.
+
+    Default (no ?format): base64 sub — standard EXIT+DIRECT ports (443/2053).
+      Standard clients get server-side anti-fingerprint automatically.
+    ?format=json: full xray JSON config with cookie-based stealth for custom clients.
+    """
+    user = await models.get_user_by_sub_token(token)
+    if not user:
+        raise HTTPException(404, "subscription not found")
+    if not user["is_active"]:
+        raise HTTPException(403, "subscription disabled")
+    if user["expire_at"] > 0 and user["expire_at"] < time.time():
+        raise HTTPException(403, "subscription expired")
+    if user["data_limit"] > 0 and user["data_used"] >= user["data_limit"]:
+        raise HTTPException(403, "data limit exceeded")
+
+    nodes = await models.get_active_nodes()
+    fmt = request.query_params.get("format", "sub")
+
+    if fmt == "json":
+        from xray import generate_stealth_config
+        config = generate_stealth_config(user["xray_uuid"], user["username"], nodes)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            config,
+            headers={
+                "Content-Disposition": f'attachment; filename="clawvpn-stealth-{user["username"]}.json"',
+                "Profile-Title": f"ClawVPN - {user['username']} (Stealth)",
+            }
+        )
+
+    # Base64 sub: standard ports with anti-fingerprint (works with ANY client)
+    links = generate_sub_links(
+        user["xray_uuid"], user["username"], nodes,
+        enabled_protocols="exit,direct"
+    )
+
+    content = "\n".join(links)
+    encoded = base64.b64encode(content.encode()).decode()
+
+    upload = 0
+    download = user["data_used"]
+    total = user["data_limit"] if user["data_limit"] > 0 else 0
+    expire = int(user["expire_at"]) if user["expire_at"] > 0 else 0
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{user["username"]}-stealth.txt"',
+        "Profile-Title": f"ClawVPN - {user['username']} (Stealth)",
+        "Profile-Update-Interval": "12",
+        "Support-URL": "https://t.me/clawvpn",
+    }
+
+    userinfo_parts = [f"upload={upload}", f"download={download}"]
+    if total > 0:
+        userinfo_parts.append(f"total={total}")
+    if expire > 0:
+        userinfo_parts.append(f"expire={expire}")
+    headers["Subscription-Userinfo"] = "; ".join(userinfo_parts)
+
+    return PlainTextResponse(encoded, headers=headers)
+
 
 @app.get("/api/stats")
 async def api_stats(request: Request):
@@ -507,6 +623,66 @@ async def api_stats(request: Request):
         "online_nodes": online_nodes,
         "total_traffic": format_bytes(total_traffic)
     }
+
+
+# ---------------------------------------------------------------------------
+# Scrape proxy API — static bearer, returns SOCKS5 proxies per live node
+# ---------------------------------------------------------------------------
+
+SCRAPE_API_TOKEN = os.environ.get("SCRAPE_API_TOKEN", "")
+SCRAPE_SOCKS_PORT = int(os.environ.get("SCRAPE_SOCKS_PORT", "0"))
+SCRAPE_SOCKS_USER = os.environ.get("SCRAPE_SOCKS_USER", "")
+SCRAPE_SOCKS_PASS = os.environ.get("SCRAPE_SOCKS_PASS", "")
+
+
+@app.get("/api/proxies")
+async def api_proxies(request: Request):
+    """Return SOCKS5 proxy list for all online nodes.
+
+    Auth: Authorization: Bearer <SCRAPE_API_TOKEN>
+
+    Response:
+      { "proxies": [
+          { "name": "NL2", "host": "212.46.33.55", "port": 11080,
+            "user": "clawscrape", "pass": "...",
+            "url": "socks5://user:pass@ip:port" },
+          ...
+      ]}
+    """
+    if not SCRAPE_API_TOKEN:
+        raise HTTPException(503, "proxy API not configured")
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer ") or not hmac.compare_digest(auth[7:], SCRAPE_API_TOKEN):
+        raise HTTPException(401, "invalid token")
+
+    nodes = await models.get_all_nodes()
+    proxies = []
+    for node in nodes:
+        if not node["is_active"]:
+            continue
+        # Only include nodes with recent heartbeat (< 120s)
+        if time.time() - node.get("last_heartbeat", 0) > 120:
+            continue
+
+        # Resolve node IP from address
+        import socket
+        try:
+            ip = socket.gethostbyname(node["address"])
+        except socket.gaierror:
+            ip = node["address"]
+
+        url = f"socks5://{SCRAPE_SOCKS_USER}:{SCRAPE_SOCKS_PASS}@{ip}:{SCRAPE_SOCKS_PORT}"
+        proxies.append({
+            "name": node["name"],
+            "host": ip,
+            "port": SCRAPE_SOCKS_PORT,
+            "user": SCRAPE_SOCKS_USER,
+            "pass": SCRAPE_SOCKS_PASS,
+            "url": url,
+        })
+
+    return {"proxies": proxies, "count": len(proxies)}
 
 
 # ---------------------------------------------------------------------------
@@ -621,7 +797,7 @@ async def api_update_protocols(request: Request, user_id: str):
     body = await request.json()
     protocols = body.get("enabled_protocols", "")
     # Validate: only allow known protocol keys
-    valid = {"exit", "direct", "dns", "icmp"}
+    valid = {"exit", "direct", "socks", "socks-pk", "dns", "icmp"}
     parts = [p.strip().lower() for p in protocols.split(",") if p.strip()]
     cleaned = ",".join(p for p in parts if p in valid)
     if not cleaned:
@@ -641,7 +817,7 @@ async def api_user_sub_info(request: Request, user_id: str):
         raise HTTPException(404)
     links = generate_sub_links(
         user["xray_uuid"], user["username"], nodes,
-        enabled_protocols=user.get("enabled_protocols", "exit,direct,dns,icmp")
+        enabled_protocols=user.get("enabled_protocols", "exit,direct,socks,socks-pk,dns,icmp")
     )
     scheme = request.headers.get("x-forwarded-proto", "https")
     host = PANEL_HOST or request.headers.get("host", "panel.clawvpn.lol")

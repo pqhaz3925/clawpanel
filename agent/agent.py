@@ -36,7 +36,7 @@ XRAY_HY_CFG     = os.environ.get("XRAY_HY_CFG",     "/etc/claw-xray-hy/config.js
 XRAY_HY_SERVICE = os.environ.get("XRAY_HY_SERVICE", "claw-xray-hy")
 XRAY_API_PORT   = int(os.environ.get("XRAY_API_PORT",  "10085"))
 SYNC_INTERVAL   = int(os.environ.get("SYNC_INTERVAL",  "60"))
-AGENT_VERSION   = "2.2.0"
+AGENT_VERSION   = "2.3.0"
 
 NGINX_CONF_PATH = "/etc/nginx/sites-enabled/claw.conf"
 FAKE_HTML_PATH  = "/var/www/fake/index.html"
@@ -175,7 +175,116 @@ def read_traffic():
         return {}
 
 
+def check_binary_update():
+    """Download latest xray-hy binary from panel if hash differs."""
+    try:
+        url = f"{PANEL_URL}/agent/binary"
+        req = urllib.request.Request(url, headers={"X-Agent-Secret": AGENT_SECRET})
+        with urllib.request.urlopen(req, context=ssl_ctx, timeout=60) as r:
+            new_binary = r.read()
+
+        new_hash = hashlib.md5(new_binary).hexdigest()
+        try:
+            old_hash = hashlib.md5(Path(XRAY_HY_BIN).read_bytes()).hexdigest()
+        except FileNotFoundError:
+            old_hash = ""
+
+        if new_hash == old_hash:
+            return False
+
+        log.info(f"xray-hy binary update available ({old_hash[:8]} → {new_hash[:8]})")
+
+        # Atomic write: temp file → rename
+        target = Path(XRAY_HY_BIN)
+        fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
+        try:
+            os.write(fd, new_binary)
+            os.fchmod(fd, 0o755)
+            os.close(fd)
+            # Backup old binary
+            if target.exists():
+                backup = str(target) + ".old"
+                try:
+                    os.replace(str(target), backup)
+                except OSError:
+                    pass
+            os.replace(tmp_path, str(target))
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        log.info("xray-hy binary updated, restarting service...")
+        service_restart(XRAY_HY_SERVICE)
+        return True
+    except Exception as e:
+        log.debug(f"binary update check failed: {e}")
+        return False
+
+
+def check_agent_update():
+    """Download latest agent.py from panel and replace self if changed."""
+    try:
+        url = f"{PANEL_URL}/agent/self-update"
+        new_code = http_get(url).decode()
+        agent_path = Path(__file__).resolve()
+
+        new_hash = hashlib.md5(new_code.encode()).hexdigest()
+        try:
+            old_hash = hashlib.md5(agent_path.read_bytes()).hexdigest()
+        except FileNotFoundError:
+            old_hash = ""
+
+        if new_hash == old_hash:
+            return False
+
+        log.info(f"agent.py update available ({old_hash[:8]} → {new_hash[:8]})")
+
+        # Atomic write
+        fd, tmp_path = tempfile.mkstemp(dir=str(agent_path.parent), suffix=".tmp")
+        try:
+            os.write(fd, new_code.encode())
+            os.fchmod(fd, 0o755)
+            os.close(fd)
+            os.replace(tmp_path, str(agent_path))
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        log.info("agent.py updated, restarting claw-agent service...")
+        # Restart self — systemd will relaunch with new code
+        subprocess.run(["systemctl", "restart", "claw-agent"], capture_output=True, timeout=10)
+        return True
+    except Exception as e:
+        log.debug(f"agent update check failed: {e}")
+        return False
+
+
 def sync():
+    # 0. Check for updates (every 10th cycle ≈ every 10 min, NOT on first run)
+    if not hasattr(sync, '_counter'):
+        sync._counter = 0
+    sync._counter += 1
+    if sync._counter > 1 and sync._counter % 10 == 0:
+        try:
+            check_agent_update()
+            check_binary_update()
+        except Exception as e:
+            log.warning(f"update check failed: {e}")
+
     # 1. Fetch xray config
     try:
         data = json.loads(http_get(f"{PANEL_URL}/agent/config/{NODE_NAME}"))

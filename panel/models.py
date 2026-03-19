@@ -20,7 +20,7 @@ _ALLOWED_USER_COLS = frozenset({
 })
 _ALLOWED_NODE_COLS = frozenset({
     "is_active", "address", "flag", "label", "name",
-    "last_heartbeat", "agent_version",
+    "last_heartbeat", "agent_version", "xhttp_path",
 })
 
 
@@ -66,7 +66,7 @@ async def init_db():
                 expire_at REAL DEFAULT 0,
                 is_active INTEGER DEFAULT 1,
                 note TEXT DEFAULT '',
-                enabled_protocols TEXT DEFAULT 'exit,direct,dns,icmp',
+                enabled_protocols TEXT DEFAULT 'exit,direct,socks,socks-pk,dns,icmp',
                 created_at REAL DEFAULT (unixepoch())
             );
             CREATE TABLE IF NOT EXISTS traffic_log (
@@ -110,6 +110,34 @@ async def init_db():
             await db.execute(
                 "ALTER TABLE users ADD COLUMN enabled_protocols TEXT DEFAULT 'exit,direct,dns,icmp'"
             )
+
+        # Migration: add xhttp_path column to nodes if missing
+        node_cols = [r[1] for r in await db.execute_fetchall("PRAGMA table_info(nodes)")]
+        if "xhttp_path" not in node_cols:
+            await db.execute(
+                "ALTER TABLE nodes ADD COLUMN xhttp_path TEXT DEFAULT ''"
+            )
+            # Backfill existing nodes with random paths
+            nodes = await db.execute_fetchall("SELECT id, xhttp_path FROM nodes")
+            for n in nodes:
+                if not n["xhttp_path"]:
+                    rpath = "/" + secrets.token_urlsafe(8)
+                    await db.execute("UPDATE nodes SET xhttp_path=? WHERE id=?", (rpath, n["id"]))
+
+        # Migration: add socks,socks-pk to existing users' enabled_protocols
+        all_users = await db.execute_fetchall("SELECT id, enabled_protocols FROM users")
+        for u in all_users:
+            protos = u["enabled_protocols"] or "exit,direct,dns,icmp"
+            parts = [p.strip() for p in protos.split(",")]
+            if "socks" not in parts or "socks-pk" not in parts:
+                if "socks" not in parts:
+                    parts.append("socks")
+                if "socks-pk" not in parts:
+                    parts.append("socks-pk")
+                await db.execute(
+                    "UPDATE users SET enabled_protocols=? WHERE id=?",
+                    (",".join(parts), u["id"])
+                )
 
         await db.commit()
 
@@ -200,15 +228,16 @@ async def create_node(name: str, address: str, flag: str = "🌍", label: str = 
     async with _db() as db:
         nid = str(uuid.uuid4())[:8]
         now = time.time()
+        xhttp_path = "/" + secrets.token_urlsafe(8)
         await db.execute(
-            "INSERT INTO nodes (id, name, address, flag, label) VALUES (?,?,?,?,?)",
-            (nid, name, address, flag, label or name)
+            "INSERT INTO nodes (id, name, address, flag, label, xhttp_path) VALUES (?,?,?,?,?,?)",
+            (nid, name, address, flag, label or name, xhttp_path)
         )
         await db.commit()
         return {
             "id": nid, "name": name, "address": address, "flag": flag,
             "label": label or name, "is_active": 1, "last_heartbeat": 0,
-            "agent_version": "", "created_at": now,
+            "agent_version": "", "created_at": now, "xhttp_path": xhttp_path,
         }
 
 
